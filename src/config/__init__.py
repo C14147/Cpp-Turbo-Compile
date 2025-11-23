@@ -3,6 +3,7 @@ import config.enums
 import config.pch
 import config.compiler
 import config.build_system
+import config.lib_buildtime_patterns
 
 
 @dataclass
@@ -33,4 +34,3 @@ class OptimizationConfig:
     unity_build: bool = False
     cache_compilation: bool = True
     parallel_build: bool = True
-    

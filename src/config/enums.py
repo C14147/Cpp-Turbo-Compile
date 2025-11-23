@@ -22,4 +22,3 @@ class Compiler(Enum):
     CLANG = "clang"
     MSVC = "msvc"
     ICC = "icc"  # Intel C++ Compiler
-    
