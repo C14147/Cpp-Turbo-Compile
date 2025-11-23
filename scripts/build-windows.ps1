@@ -1,15 +1,15 @@
 <#
-Build script for Windows (PowerShell) using Nuitka
+Build script for Windows (PowerShell) using PyInstaller
 
 Usage:
   In PowerShell run:
     .\scripts\build-windows.ps1     # uses `python` from PATH
-    .\scripts\build-windows.ps1 --windows-disable-console  # pass extra nuitka args
+    .\scripts\build-windows.ps1 --onefile --noconsole  # pass extra PyInstaller args
 
 Notes:
-  - This script calls `python -m nuitka` so ensure your Python environment
-    has `nuitka` installed (e.g. `python -m pip install nuitka`).
-  - Extra arguments passed to the script are forwarded to Nuitka.
+  - This script calls `pyinstaller` so ensure your Python environment
+    has `pyinstaller` installed (e.g. `python -m pip install pyinstaller`).
+  - Extra arguments passed to the script are forwarded to PyInstaller.
 #>
 
 Set-StrictMode -Version Latest
@@ -34,17 +34,38 @@ if (-Not (Test-Path $Entrypoint)) {
     exit 1
 }
 
-Write-Host "Building $Entrypoint with Nuitka..."
+Write-Host "Building $Entrypoint with PyInstaller..."
+
+# Ensure build dir exists and is clean
+New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
+
+$PyInstallerArgs = @(
+  '--clean',
+  '--noconfirm',
+  '--distpath', $BuildDir,
+  '--workpath', (Join-Path $BuildDir 'build_work'),
+  '--specpath', (Join-Path $BuildDir 'spec')
+)
+
+# Default to one-folder; allow overriding via script args
+if ($args -contains '--onefile' -or $args -contains '-F') {
+  $PyInstallerArgs += '--onefile'
+} else {
+  # produce onedir by default
+  $PyInstallerArgs += '--onedir'
+}
+
+# Forward any other args except our handled --onefile
+$forward = $args | Where-Object { $_ -ne '--onefile' -and $_ -ne '-F' }
 
 try {
-    # Forward any additional args to Nuitka
-    & python -m nuitka --standalone --output-dir="$BuildDir" --remove-output --show-progress --follow-imports "$Entrypoint" @args
+  & python -m PyInstaller @PyInstallerArgs $forward "$Entrypoint"
 } catch {
-    Write-Error "Build failed: $_"
-    exit 1
+  Write-Error "Build failed: $_"
+  exit 1
 }
 
 Write-Host "Build finished. Output located in:" -NoNewline
 Write-Host " $BuildDir" -ForegroundColor Green
 
-Write-Host "Run the produced executable from the standalone folder (check subfolder next to main binary)."
+Write-Host "Run the produced executable from the dist folder inside $BuildDir."

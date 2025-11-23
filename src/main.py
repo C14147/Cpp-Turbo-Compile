@@ -7,6 +7,7 @@ C++项目编译优化分析器 - 增强优化版
 
 import os
 import argparse
+import sys
 from config import *
 from CppProjectAnalyzer import CppProjectAnalyzer
 
@@ -190,4 +191,4 @@ def main():
 
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())

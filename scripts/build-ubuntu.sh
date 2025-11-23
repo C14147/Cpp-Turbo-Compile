@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Build script for Ubuntu (bash) using Nuitka
+# Build script for Ubuntu (bash) using PyInstaller
 #
 # Usage:
 #   ./scripts/build-ubuntu.sh          # uses `python` from PATH
-#   ./scripts/build-ubuntu.sh --onefile  # pass extra nuitka args
+#   ./scripts/build-ubuntu.sh --onefile  # pass extra PyInstaller args
 #
 # Notes:
-#  - Ensure `nuitka` is installed in the selected Python environment:
-#      python -m pip install nuitka
-#  - Extra arguments passed to this script are forwarded to Nuitka.
+#  - Ensure `pyinstaller` is installed in the selected Python environment:
+#      python -m pip install pyinstaller
+#  - Extra arguments passed to this script are forwarded to PyInstaller.
 
 set -euo pipefail
 
@@ -31,9 +31,22 @@ if [ ! -f "$ENTRYPOINT" ]; then
   exit 1
 fi
 
-echo "Building $ENTRYPOINT with Nuitka..."
+echo "Building $ENTRYPOINT with PyInstaller..."
 
-python -m nuitka --standalone --output-dir="$BUILD_DIR" --remove-output --show-progress --follow-imports "$ENTRYPOINT" "$@"
+mkdir -p "$BUILD_DIR"
+
+# Default to onedir; if --onefile provided, create single exe
+pyinstaller_args=(--clean --noconfirm --distpath "$BUILD_DIR" --workpath "$BUILD_DIR/build_work" --specpath "$BUILD_DIR/spec")
+
+for a in "$@"; do
+  if [ "$a" = "--onefile" ] || [ "$a" = "-F" ]; then
+    pyinstaller_args+=(--onefile)
+  else
+    pyinstaller_args+=("$a")
+  fi
+done
+
+python -m PyInstaller "${pyinstaller_args[@]}" "$ENTRYPOINT"
 
 echo "Build finished. Output located in: $BUILD_DIR"
-echo "Run the produced executable from the standalone folder (check subfolder next to main binary)."
+echo "Run the produced executable from the dist folder inside $BUILD_DIR."
