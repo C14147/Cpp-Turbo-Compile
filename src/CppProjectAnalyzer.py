@@ -1,5 +1,4 @@
 import re
-import json
 import time
 import subprocess
 import fnmatch
@@ -197,7 +196,7 @@ class CppProjectAnalyzer:
             # 检测问题
             self._detect_file_issues(file_path, content)
 
-        except Exception as e:
+        except IOError as e:
             print(f"⚠️  无法分析文件 {file_path}: {e}")
     
     def _read_file_with_encoding(self, file_path: Path) -> str:
@@ -485,7 +484,7 @@ class CppProjectAnalyzer:
                                         header_lines = len(header_content.splitlines())
                                     else:
                                         header_lines = 500  # 默认项目头文件行数
-                                except:
+                                except IOError:
                                     header_lines = 500
                             
                             # 头文件编译时间（考虑包含开销，系统头文件开销较小）
@@ -565,9 +564,9 @@ class CppProjectAnalyzer:
             for header, count in project_headers:
                 pch_content += f'#include "{header}"  // time: {count}\n'
 
-        compiler_config = self.compiler_config.get(
-            self.compiler, self.compiler_config[config.enums.Compiler.GCC]
-        )
+        # 安全地获取编译器配置，防止意外的KeyError
+        default_compiler = config.enums.Compiler.GCC
+        compiler_config = self.compiler_config.get(self.compiler, self.compiler_config[default_compiler])
 
         pch_content += config.pch.PCH_SPECIAL_OPT
 
@@ -599,7 +598,9 @@ class CppProjectAnalyzer:
                 config.enums.Compiler.ICC,
             ]:
                 # GCC/Clang/ICC PCH编译
-                pch_output = pch_file.with_suffix(compiler_config["pch_ext"])
+                # 使用get方法提供安全的默认值
+                pch_ext = compiler_config.get("pch_ext", ".gch")
+                pch_output = pch_file.with_suffix(pch_ext)
                 cmd = [
                     self.compiler.value,
                     *compiler_config["pch_flags"],
@@ -617,7 +618,12 @@ class CppProjectAnalyzer:
                     cmd.append("-flto")
 
                 result = subprocess.run(
-                    cmd, cwd=self.project_path, capture_output=True, text=True
+                    cmd,
+                    cwd=str(self.project_path),
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=self.analysis_config.analysis_timeout,
                 )
 
                 if result.returncode == 0:
@@ -653,7 +659,14 @@ class CppProjectAnalyzer:
 
         configs = {}
         for build_sys, generator in config_generators.items():
-            configs[build_sys.value] = generator()
+            try:
+                configs[build_sys.value] = generator()
+            except Exception as e:
+                configs[build_sys.value] = f"# 生成 {build_sys.value} 配置时出错: {e}"
+
+        # 确保至少返回一个配置
+        if not configs:
+            configs["unsupported"] = "# Unsupported build system"
 
         return configs
 
@@ -795,7 +808,7 @@ $(PCH_FILE): $(PCH_HEADER)
 
 # 包含PCH的编译规则
 %.o: %.cpp $(PCH_FILE)
-\t$(CXX) $(CXXFLAGS) -include $(PCH_HEADER) -c $< -o $@
+\t$(CXX) $(CXXFLAGS) -include $(PCH_HEADER) -c $$< -o $$@
 
 # 并行编译
 JOBS := $(shell nproc 2>/dev/null || echo 4)
@@ -1063,7 +1076,7 @@ meson.add_install_script('post_install.py')
             config.enums.BuildSystem.BAZEL: "bazel build --jobs=$(nproc)",
             config.enums.BuildSystem.MESON: "ninja -j$(nproc)",  # Meson通常使用Ninja作为后端
         }
-        return commands.get(self.build_system, "make -j$(nproc)")
+        return commands.get(self.build_system, "make -j$(nproc) # 默认并行构建命令")
 
     def _get_analysis_summary(self) -> Dict[str, Any]:
         """获取分析摘要"""
