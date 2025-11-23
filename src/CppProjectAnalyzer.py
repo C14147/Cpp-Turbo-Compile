@@ -175,9 +175,9 @@ class CppProjectAnalyzer:
         include_pattern = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[">]')
 
         try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
-
+            # 先尝试UTF-8编码，如果失败则回退到其他编码
+            content = self._read_file_with_encoding(file_path)
+            
             # 分析文件大小
             self.file_sizes[file_path] = len(content)
 
@@ -192,13 +192,47 @@ class CppProjectAnalyzer:
                 if resolved_path:
                     self.include_graph[file_path].add(resolved_path)
                     self.dependency_count[resolved_path] += 1
-
+            
             self.file_includes[file_path] = includes
             # 检测问题
             self._detect_file_issues(file_path, content)
 
         except Exception as e:
             print(f"⚠️  无法分析文件 {file_path}: {e}")
+    
+    def _read_file_with_encoding(self, file_path: Path) -> str:
+        """
+        使用多种编码方式尝试读取文件
+        """
+        # 按优先级排列的编码列表，包含了更多常见的编码格式
+        encodings = [
+            'utf-8',           # 现代标准编码
+            'utf-8-sig',       # 带BOM的UTF-8
+            'gbk',             # 简体中文Windows默认编码
+            'gb2312',          # 简体中文编码
+            'gb18030',         # 中国国家标准编码
+            'big5',            # 繁体中文编码
+            'shift-jis',       # 日文编码
+            'euc-kr',          # 韩文编码
+            'latin1',          # 西欧编码
+            'iso-8859-1',      # ISO标准西欧编码
+            'iso-8859-2',      # ISO标准中欧编码
+            'cp1251',          # 俄文Windows编码
+            'cp1252',          # 西欧Windows编码
+            'ascii'            # ASCII编码
+        ]
+        
+        for encoding in encodings:
+            try:
+                with open(file_path, 'r', encoding=encoding) as f:
+                    return f.read()
+            except (UnicodeDecodeError, LookupError):
+                # LookupError表示Python不支持该编码
+                continue
+        
+        # 如果所有编码都失败，则使用UTF-8并忽略错误
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            return f.read()
 
     def _resolve_include_path(
         self, source_file: Path, include_name: str
@@ -385,8 +419,8 @@ class CppProjectAnalyzer:
 
         for file_path in self.files:
             try:
-                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
+                # 使用改进的文件读取方法
+                content = self._read_file_with_encoding(file_path)
 
                 for pattern, description in template_patterns:
                     matches = re.findall(pattern, content)
@@ -405,9 +439,10 @@ class CppProjectAnalyzer:
         for file_path in self.files:
             if file_path.suffix in {".cpp", ".cc", ".cxx"}:
                 try:
-                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                        lines = f.readlines()
-                        source_lines = len(lines)
+                    # 使用改进的文件读取方法
+                    content = self._read_file_with_encoding(file_path)
+                    lines = content.splitlines()
+                    source_lines = len(lines)
 
                     # 计算源文件本身的编译时间
                     source_compile_time = source_lines * base_compile_time_per_line
@@ -445,18 +480,14 @@ class CppProjectAnalyzer:
                                         file_path, header_str
                                     )
                                     if resolved_path and resolved_path.exists():
-                                        with open(
-                                            resolved_path,
-                                            "r",
-                                            encoding="utf-8",
-                                            errors="ignore",
-                                        ) as hf:
-                                            header_lines = len(hf.readlines())
+                                        # 使用改进的文件读取方法
+                                        header_content = self._read_file_with_encoding(resolved_path)
+                                        header_lines = len(header_content.splitlines())
                                     else:
                                         header_lines = 500  # 默认项目头文件行数
                                 except:
                                     header_lines = 500
-
+                            
                             # 头文件编译时间（考虑包含开销，系统头文件开销较小）
                             if header_str.startswith("<"):
                                 # 系统头文件：假设有较好的优化
@@ -470,22 +501,16 @@ class CppProjectAnalyzer:
                                 )
 
                     # 复杂度惩罚因子
-                    complexity = self._calculate_complexity(open(file_path).read())
+                    complexity = self._calculate_complexity(content)
                     complexity_penalty = 1 + (complexity * 0.02)
-
+                    
                     # 模板使用惩罚
-                    template_penalty = 1 + (
-                        len(re.findall(r"template\s*<", open(file_path).read())) * 0.05
-                    )
-
+                    template_penalty = 1 + (len(re.findall(r'template\s*<', content)) * 0.05)
+                    
                     # 总编译时间估算
-                    estimated_time = (
-                        (source_compile_time + header_compile_time)
-                        * complexity_penalty
-                        * template_penalty
-                    )
+                    estimated_time = (source_compile_time + header_compile_time) * complexity_penalty * template_penalty
                     self.build_times_estimate[file_path] = estimated_time
-
+                    
                 except Exception as e:
                     print(f"⚠️  估算 {file_path} 编译时间时出错: {e}")
                     self.build_times_estimate[file_path] = 0
@@ -884,8 +909,8 @@ meson.add_install_script('post_install.py')
         for header in header_files:
             content = ""
             try:
-                with open(header, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
+                # 使用改进的文件读取方法
+                content = self._read_file_with_encoding(header)
             except:
                 continue
 
