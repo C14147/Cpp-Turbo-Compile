@@ -59,18 +59,13 @@ def main():
   
   # 多构建系统支持
   python cpp_analyzer.py /path/to/project --build-system bazel --compiler clang
-  
-  # 生成JSON报告
-  python cpp_analyzer.py /path/to/project --output report.json --format json
-        """,
+  python cpp_analyzer.py /path/to/project --build-system qmake --compiler msvc
+  """,
     )
 
     # 基本参数
     parser.add_argument("project_path", help="C++项目根目录路径")
     parser.add_argument("-o", "--output", help="输出报告文件路径")
-    parser.add_argument(
-        "--format", choices=["text", "json"], default="text", help="报告格式"
-    )
 
     # 分析配置
     parser.add_argument(
@@ -180,7 +175,7 @@ def main():
             create_optimization_pipeline(analyzer)
 
         # 生成报告
-        analyzer.generate_report(args.output, args.format)
+        analyzer.generate_report(args.output, "text")
 
         print(f"\n🎉 分析完成！请查看报告获取详细优化建议。")
 
