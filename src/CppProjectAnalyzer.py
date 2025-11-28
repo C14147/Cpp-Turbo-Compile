@@ -8,6 +8,15 @@ from typing import List, Dict, Any, Optional
 import multiprocessing
 import concurrent.futures
 from config import *
+from build_analyzers import get_build_analyzer
+
+# Optional progress bar: use tqdm when available, otherwise fall back to no-op
+try:
+    from tqdm import tqdm
+except Exception:
+    def tqdm(iterable, **kwargs):
+        # simple passthrough iterator when tqdm is not installed
+        return iterable
 
 
 class CppProjectAnalyzer:
@@ -140,18 +149,16 @@ class CppProjectAnalyzer:
     def _parallel_analyze_files(self):
         """并行分析文件"""
         print("📊 并行分析文件...")
-
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=multiprocessing.cpu_count()
         ) as executor:
-            # 分析头文件包含关系
-            future_to_file = {
-                executor.submit(self._analyze_file_includes, file_path): file_path
-                for file_path in self.files
-            }
+            # 提交所有任务
+            futures = [executor.submit(self._analyze_file_includes, file_path) for file_path in self.files]
+            future_to_file = {f: p for f, p in zip(futures, self.files)}
 
-            for future in concurrent.futures.as_completed(future_to_file):
-                file_path = future_to_file[future]
+            # 使用 tqdm 来显示进度（若可用）
+            for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Analyzing files"):
+                file_path = future_to_file.get(future, None)
                 try:
                     future.result(timeout=self.analysis_config.analysis_timeout)
                 except concurrent.futures.TimeoutError:
@@ -162,8 +169,7 @@ class CppProjectAnalyzer:
     def _sequential_analyze_files(self):
         """顺序分析文件"""
         print("📊 顺序分析文件...")
-
-        for file_path in self.files:
+        for file_path in tqdm(self.files, desc="Analyzing files"):
             try:
                 self._analyze_file_includes(file_path)
             except Exception as e:
@@ -416,7 +422,7 @@ class CppProjectAnalyzer:
             (r"boost::\w+\s*<[^>]*>", "Boost模板"),
         ]
 
-        for file_path in self.files:
+        for file_path in tqdm(self.files, desc="Analyzing templates"):
             try:
                 # 使用改进的文件读取方法
                 content = self._read_file_with_encoding(file_path)
@@ -435,7 +441,7 @@ class CppProjectAnalyzer:
         # 基于行数的编译时间估算系数（秒/行）
         base_compile_time_per_line = 0.0005  # 经验值：0.5ms/行
 
-        for file_path in self.files:
+        for file_path in tqdm(self.files, desc="Estimating build times"):
             if file_path.suffix in {".cpp", ".cc", ".cxx"}:
                 try:
                     # 使用改进的文件读取方法
@@ -877,6 +883,27 @@ meson.add_install_script('post_install.py')
         self._suggest_code_restructuring()
         self._suggest_caching_strategies()
 
+        # 尝试使用构建系统专用分析器（如果有的话）来补充建议
+        try:
+            analyzer_cls = get_build_analyzer(str(self.project_path), self.build_system)
+            if analyzer_cls:
+                try:
+                    analyzer = analyzer_cls()
+                    result = analyzer.analyze(str(self.project_path))
+                    if isinstance(result, dict):
+                        extra = result.get("suggestions") or []
+                        if extra:
+                            # 标记来源并合并
+                            for s in extra:
+                                if "source" not in s:
+                                    s["source"] = "build_analyzer"
+                            self.suggestions.extend(extra)
+                except Exception as e:
+                    print(f"⚠️ 构建系统分析器运行失败: {e}")
+        except Exception:
+            # 若无法导入或选择分析器，则静默退回（不阻塞主流程）
+            pass
+
     def _suggest_forward_declarations(self):
         """建议使用前置声明"""
         highly_included_headers = [
@@ -1172,42 +1199,51 @@ meson.add_install_script('post_install.py')
 
         # 优化建议
         if self.suggestions:
-            print(f"\n💡 优化建议 ({len(self.suggestions)} 个):")
+            # 将来自构建系统分析器的建议单独列出，便于用户查看针对构建系统的动作
+            build_analyzer_suggestions = [s for s in self.suggestions if s.get("source") == "build_analyzer"]
+            other_suggestions = [s for s in self.suggestions if s.get("source") != "build_analyzer"]
 
-            # 按优先级分组
-            high_priority = [
-                s
-                for s in self.suggestions
-                if s["priority"] == config.enums.Severity.HIGH
-            ]
-            medium_priority = [
-                s
-                for s in self.suggestions
-                if s["priority"] == config.enums.Severity.MEDIUM
-            ]
-            low_priority = [
-                s
-                for s in self.suggestions
-                if s["priority"] == config.enums.Severity.LOW
-            ]
+            if build_analyzer_suggestions:
+                print(f"\n🔧 构建系统分析器建议 ({len(build_analyzer_suggestions)} 个):")
+                for s in build_analyzer_suggestions:
+                    pri = s.get("priority", config.enums.Severity.MEDIUM)
+                    print(f"  - [{pri.name}] {s.get('message', s.get('description',''))}")
+                    if s.get("file"):
+                        print(f"      文件: {s.get('file')}")
+                    if s.get("action"):
+                        print(f"      → {s.get('action')}")
 
-            if high_priority:
-                print("\n   🔴 高优先级:")
-                for suggestion in high_priority:
-                    print(f"      {suggestion['description']}")
-                    print(f"      → {suggestion['action']}")
+            # 普通建议按优先级分组显示
+            if other_suggestions:
+                print(f"\n💡 其他优化建议 ({len(other_suggestions)} 个):")
 
-            if medium_priority:
-                print("\n   🟡 中优先级:")
-                for suggestion in medium_priority:
-                    print(f"      {suggestion['description']}")
-                    print(f"      → {suggestion['action']}")
+                high_priority = [
+                    s for s in other_suggestions if s.get("priority") == config.enums.Severity.HIGH
+                ]
+                medium_priority = [
+                    s for s in other_suggestions if s.get("priority") == config.enums.Severity.MEDIUM
+                ]
+                low_priority = [
+                    s for s in other_suggestions if s.get("priority") == config.enums.Severity.LOW
+                ]
 
-            if low_priority:
-                print("\n   🔵 低优先级:")
-                for suggestion in low_priority:
-                    print(f"      {suggestion['description']}")
-                    print(f"      → {suggestion['action']}")
+                if high_priority:
+                    print("\n   🔴 高优先级:")
+                    for suggestion in high_priority:
+                        print(f"      {suggestion.get('description')}")
+                        print(f"      → {suggestion.get('action')}")
+
+                if medium_priority:
+                    print("\n   🟡 中优先级:")
+                    for suggestion in medium_priority:
+                        print(f"      {suggestion.get('description')}")
+                        print(f"      → {suggestion.get('action')}")
+
+                if low_priority:
+                    print("\n   🔵 低优先级:")
+                    for suggestion in low_priority:
+                        print(f"      {suggestion.get('description')}")
+                        print(f"      → {suggestion.get('action')}")
 
         # 保存报告
         if output_file and format == "text":
@@ -1238,13 +1274,27 @@ meson.add_install_script('post_install.py')
                     f.write(f"     问题: {issue['message']}\n")
                     f.write(f"     建议: {issue['suggestion']}\n\n")
 
-            # 写入建议
+            # 写入建议：优先写入来自构建系统分析器的建议
             if self.suggestions:
-                f.write(f"优化建议 ({len(self.suggestions)} 个):\n")
-                for suggestion in self.suggestions:
-                    f.write(
-                        f"  [{suggestion['priority'].name}] {suggestion['description']}\n"
-                    )
-                    f.write(f"     操作: {suggestion['action']}\n\n")
+                build_analyzer_suggestions = [s for s in self.suggestions if s.get('source') == 'build_analyzer']
+                other_suggestions = [s for s in self.suggestions if s.get('source') != 'build_analyzer']
+
+                if build_analyzer_suggestions:
+                    f.write(f"构建系统分析器建议 ({len(build_analyzer_suggestions)} 个):\n")
+                    for s in build_analyzer_suggestions:
+                        pri = s.get('priority', config.enums.Severity.MEDIUM)
+                        f.write(f"  [{pri.name}] {s.get('message', s.get('description',''))}\n")
+                        if s.get('file'):
+                            f.write(f"     文件: {s.get('file')}\n")
+                        if s.get('action'):
+                            f.write(f"     操作: {s.get('action')}\n")
+                        f.write("\n")
+
+                if other_suggestions:
+                    f.write(f"其他优化建议 ({len(other_suggestions)} 个):\n")
+                    for suggestion in other_suggestions:
+                        pri = suggestion.get('priority', config.enums.Severity.MEDIUM)
+                        f.write(f"  [{pri.name}] {suggestion.get('description')}\n")
+                        f.write(f"     操作: {suggestion.get('action')}\n\n")
 
         print(f"💾 文本报告已保存至: {output_file}")
